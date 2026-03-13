@@ -64,7 +64,7 @@ const parseJsonFields = (rows, fields) => {
 };
 
 // --- EMAIL LOGIC ---
-const generateEmailHtml = (completedTasks, groupedPending, allSubtasks) => {
+const generateEmailHtml = (completedTasks, groupedPending, allSubtasks, completedSubtasksToday = []) => {
     const today = new Date().toLocaleDateString('es-ES', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
     const getStatusStyle = (status) => {
@@ -145,8 +145,21 @@ const generateEmailHtml = (completedTasks, groupedPending, allSubtasks) => {
             </div>
             <div style="padding: 30px;">
                 <div style="background-color: #ecfdf5; border: 1px solid #d1fae5; border-radius: 8px; padding: 20px; margin-bottom: 30px;">
-                    <h2 style="color: #047857; margin-top: 0; font-size: 18px; display: flex; align-items: center;">✅ Logros del Día (${completedTasks.length})</h2>
-                    ${completedTasks.length > 0 ? `<ul style="padding-left: 20px; margin-bottom: 0; color: #065f46;">${completedTasks.map(t => `<li style="margin-bottom: 10px;"><strong>${t.title}</strong>${renderSubtasks(t.id, true)}</li>`).join('')}</ul>` : '<p style="color: #065f46; font-style: italic;">Hoy no se han cerrado tareas principales.</p>'}
+                    <h2 style="color: #047857; margin-top: 0; font-size: 18px; display: flex; align-items: center;">✅ Logros del Día</h2>
+                    <p style="text-xs; color: #065f46; margin-bottom: 10px;">Tareas y subtareas completadas hoy:</p>
+                    ${completedTasks.length > 0 ? `
+                        <ul style="padding-left: 20px; margin-bottom: 20px; color: #065f46;">
+                            ${completedTasks.map(t => `<li style="margin-bottom: 10px;"><strong>[Tarea] ${t.title}</strong>${renderSubtasks(t.id, true)}</li>`).join('')}
+                        </ul>
+                    ` : ''}
+                    ${completedSubtasksToday.length > 0 ? `
+                        <div style="border-top: 1px solid #d1fae5; padding-top: 10px;">
+                            <ul style="padding-left: 20px; color: #065f46; list-style: none;">
+                                ${completedSubtasksToday.map(s => `<li style="margin-bottom: 5px; font-size: 14px;">🔹 <strong>[Subtarea]</strong> ${s.title}</li>`).join('')}
+                            </ul>
+                        </div>
+                    ` : ''}
+                    ${completedTasks.length === 0 && completedSubtasksToday.length === 0 ? '<p style="color: #065f46; font-style: italic;">Hoy no se han cerrado tareas ni subtareas.</p>' : ''}
                 </div>
                 <h2 style="color: #111827; font-size: 18px; border-bottom: 2px solid #1e40af; padding-bottom: 10px; margin-bottom: 20px;">📋 Panorama Pendiente</h2>
                 ${pendingHtml || '<p style="text-align: center; color: #6b7280;">¡Todo limpio! No hay tareas pendientes.</p>'}
@@ -156,6 +169,147 @@ const generateEmailHtml = (completedTasks, groupedPending, allSubtasks) => {
     </body>
     </html>
     `;
+};
+
+// --- SETTINGS & NOTIFICATION LOGIC ---
+
+const initSettings = async () => {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS settings (
+                setting_key VARCHAR(50) PRIMARY KEY,
+                setting_value TEXT
+            )
+        `);
+        // Insert default email if not exists
+        const [rows] = await pool.query('SELECT * FROM settings WHERE setting_key = ?', ['notification_email']);
+        if (rows.length === 0) {
+            await pool.query('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?)', ['notification_email', process.env.EMAIL_TO || 'jamezcua@arsys.es']);
+        }
+        console.log('✅ [SYSTEM] Tabla de configuración verificada');
+    } catch (e) {
+        console.error('❌ [SYSTEM] Error inicializando settings:', e);
+    }
+};
+initSettings();
+
+const getNotificationEmail = async () => {
+    try {
+        const [rows] = await pool.query('SELECT setting_value FROM settings WHERE setting_key = ?', ['notification_email']);
+        if (rows.length > 0) return rows[0].setting_value;
+    } catch (e) { }
+    return REPORT_EMAIL_DEST; // Fallback
+};
+
+const sendScheduledTaskNotification = async () => {
+    console.log(`[${new Date().toISOString()}] Comprobando tareas programadas para hoy...`);
+    try {
+        await transporter.verify();
+        const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
+
+        // Usamos DATE() para asegurar la comparación correcta y quitamos el filtro de status "done" 
+        // para que también avise si se acaba de terminar hoy o simplemente para ser más laxos en la prueba.
+        // Volvemos a status != "done" pero con DATE() robusto.
+        const [tasks] = await pool.query('SELECT * FROM tasks WHERE DATE(scheduled_date) = ? AND status != "done"', [todayStr]);
+
+        if (tasks.length === 0) {
+            console.log("No hay tareas programadas para enviar hoy.");
+            return { success: true, count: 0 };
+        }
+
+        const emailDest = await getNotificationEmail();
+
+        const html = `
+            <h2>📅 Tareas para Hoy</h2>
+            <p>Las siguientes tareas estaban programadas para hoy y han aparecido en tu lista:</p>
+            <ul>
+                ${tasks.map(t => `<li><strong>${t.title}</strong>${t.description ? `<br><small>${t.description}</small>` : ''}</li>`).join('')}
+            </ul>
+        `;
+
+        await transporter.sendMail({
+            from: `"FocusDeck Bot" <${process.env.EMAIL_USER}>`,
+            to: emailDest,
+            subject: `🔔 ${tasks.length} Tarea(s) Programada(s) para Hoy`,
+            html: html
+        });
+        console.log(`✅ [NOTIFICACIÓN] Correo enviado a ${emailDest} con ${tasks.length} tareas.`);
+        return { success: true, count: tasks.length };
+
+    } catch (error) {
+        console.error('Error enviando notificación de tareas programadas:', error);
+        return { success: false, error: error.message };
+    }
+};
+
+const sendWeeklyProjectLogs = async () => {
+    console.log(`[${new Date().toISOString()}] Generando resumen semanal de diarios de proyectos...`);
+    try {
+        const [activeProjects] = await pool.query('SELECT * FROM projects WHERE status != "closed"');
+        if (activeProjects.length === 0) return;
+
+        const [logs] = await pool.query('SELECT * FROM project_logs WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY) ORDER BY created_at DESC');
+        const [clients] = await pool.query('SELECT * FROM clients');
+
+        const emailDest = await getNotificationEmail();
+
+        let logsHtml = '';
+        for (const project of activeProjects) {
+            const projectLogs = logs.filter(l => l.project_id === project.id);
+            if (projectLogs.length === 0) continue;
+
+            const client = clients.find(c => c.id === project.client_id);
+            logsHtml += `
+                <div style="margin-bottom: 25px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+                    <div style="background-color: #f8fafc; padding: 10px 15px; border-bottom: 1px solid #e5e7eb;">
+                        <h3 style="margin: 0; color: #1e40af; font-size: 16px;">${project.name}</h3>
+                        <span style="font-size: 12px; color: #64748b;">${client ? client.name : 'Sin Cliente'}</span>
+                    </div>
+                    <div style="padding: 15px;">
+                        <ul style="margin: 0; padding-left: 20px; color: #334155; font-size: 14px;">
+                            ${projectLogs.map(l => `<li style="margin-bottom: 10px;">
+                                <div style="font-size: 11px; color: #94a3b8; font-weight: bold;">${new Date(l.created_at).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+                                <div style="white-space: pre-wrap;">${l.content}</div>
+                            </li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+            `;
+        }
+
+        if (!logsHtml) {
+            console.log('No hay logs recientes para enviar en el resumen semanal.');
+            return;
+        }
+
+        const finalHtml = `
+            <!DOCTYPE html>
+            <html>
+            <body style="font-family: sans-serif; padding: 20px; background-color: #f1f5f9;">
+                <div style="max-width: 700px; margin: 0 auto; background-color: #ffffff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">
+                    <h1 style="color: #1e40af; border-bottom: 2px solid #1e40af; padding-bottom: 10px; margin-bottom: 25px;">📉 Resumen Semanal de Proyectos</h1>
+                    <p style="color: #475569; margin-bottom: 20px;">Aquí tienes los últimos apuntes en los diarios de tus proyectos activos:</p>
+                    ${logsHtml}
+                    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; text-align: center;">
+                        FocusDeck Weekly Report - ${new Date().toLocaleDateString('es-ES')}
+                    </div>
+                </div>
+            </body>
+            </html>
+        `;
+
+        await transporter.sendMail({
+            from: `"FocusDeck" <${process.env.EMAIL_USER}>`,
+            to: emailDest,
+            subject: `📉 Resumen Semanal de Diarios de Proyecto (${new Date().toLocaleDateString('es-ES')})`,
+            html: finalHtml
+        });
+
+        console.log('✅ Resumen semanal enviado.');
+
+    } catch (error) {
+        console.error('Error enviando resumen semanal:', error);
+    }
 };
 
 const sendDailyReport = async () => {
@@ -170,12 +324,30 @@ const sendDailyReport = async () => {
         let subtasks = [];
         try { const [s] = await pool.query('SELECT * FROM subtasks'); subtasks = s; } catch (e) { }
 
-        const today = new Date().toISOString().split('T')[0];
+        const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' });
 
         const completedToday = tasks.filter(t => {
             if (t.status !== 'done') return false;
             const dateStr = t.completed_at || t.updated_at || new Date().toISOString();
-            return new Date(dateStr).toISOString().split('T')[0] === today;
+            return new Date(dateStr).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' }) === today;
+        });
+
+        const completedSubtasksToday = subtasks.filter(s => {
+            if (s.status !== 'done') return false;
+
+            // Usar completed_at si existe, si no fallback a updated_at
+            const dateStr = s.completed_at || s.updated_at || new Date().toISOString();
+            const isTodaySub = new Date(dateStr).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' }) === today;
+            if (!isTodaySub) return false;
+
+            // Si la tarea padre está completada hoy, ya aparece en logros principales
+            const parentTask = tasks.find(t => t.id === s.task_id);
+            if (parentTask && parentTask.status === 'done') {
+                const parentDateStr = parentTask.completed_at || parentTask.updated_at || new Date().toISOString();
+                if (new Date(parentDateStr).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' }) === today) return false;
+            }
+
+            return true;
         });
 
         const pending = tasks.filter(t => t.status !== 'done');
@@ -197,7 +369,8 @@ const sendDailyReport = async () => {
                 const proj = projects.find(p => p.id === t.project_id);
                 if (proj) {
                     const client = clients.find(c => c.id === proj.client_id);
-                    const clientSuffix = client ? ` | ${client.name}` : '';
+                    const companyName = client ? client.name : (proj.company || 'Sin Empresa');
+                    const clientSuffix = client ? ` | ${client.name}` : (proj.company ? ` | ${proj.company}` : '');
                     const key = `📂 ${proj.name}${clientSuffix}`;
                     if (grouped[key]) grouped[key].push(t);
                 }
@@ -211,11 +384,13 @@ const sendDailyReport = async () => {
 
         for (const key in grouped) { if (grouped[key].length === 0) delete grouped[key]; }
 
-        const html = generateEmailHtml(completedToday, grouped, subtasks);
+        const html = generateEmailHtml(completedToday, grouped, subtasks, completedSubtasksToday);
+
+        const emailDest = await getNotificationEmail();
 
         const info = await transporter.sendMail({
             from: `"FocusDeck Bot" <${process.env.EMAIL_USER}>`,
-            to: REPORT_EMAIL_DEST,
+            to: emailDest,
             subject: `📊 Resumen Diario - ${new Date().toLocaleDateString('es-ES')}`,
             html: html
         });
@@ -238,15 +413,77 @@ cron.schedule(REPORT_TIME, () => {
     scheduled: true,
     timezone: "Europe/Madrid"
 });
-console.log(`✅ [SYSTEM] Cron de reportes programado para: ${REPORT_TIME} (Hora Server: ${new Date().toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid' })})`);
+
+cron.schedule('0 9 * * 1', () => {
+    console.log(`⏰ [CRON] Ejecutando resumen semanal de lunes a las ${new Date().toLocaleTimeString()}`);
+    sendWeeklyProjectLogs();
+}, {
+    scheduled: true,
+    timezone: "Europe/Madrid"
+});
+
+console.log(`✅ [SYSTEM] Crons programados correctamente.`);
 
 // --- API ROUTES ---
+
+// --- API ROUTES ---
+
+// 0. Settings
+app.get('/api/settings', async (req, res) => {
+    try {
+        const [rows] = await pool.query('SELECT * FROM settings');
+        const settings = {};
+        rows.forEach(row => settings[row.setting_key] = row.setting_value);
+        res.json(settings);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/settings', async (req, res) => {
+    const settings = req.body;
+    try {
+        const queries = Object.entries(settings).map(([key, value]) => {
+            return pool.query(
+                'INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+                [key, value, value]
+            );
+        });
+        await Promise.all(queries);
+        res.json({ success: true });
+    } catch (e) {
+        console.error("Error updating settings:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/settings', async (req, res) => {
+    const { key, value } = req.body;
+    try {
+        await pool.query('INSERT INTO settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?', [key, value, value]);
+        res.json({ success: true, key, value });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get('/api/test-email', async (req, res) => {
     req.setTimeout(15000);
     const result = await sendDailyReport();
     if (result.success) res.json(result);
     else res.status(500).json(result);
+});
+
+app.get('/api/test-weekly-report', async (req, res) => {
+    console.log("Triggering manual Weekly Report");
+    await sendWeeklyProjectLogs();
+    res.json({ success: true, message: "Weekly report triggered" });
+});
+
+app.get('/api/test-scheduled-report', async (req, res) => {
+    console.log("Triggering manual Scheduled Tasks Notification");
+    const result = await sendScheduledTaskNotification();
+    if (result.success) {
+        res.json(result);
+    } else {
+        res.status(500).json(result);
+    }
 });
 
 // 1. Dashboard
@@ -270,8 +507,12 @@ app.get('/api/dashboard', async (req, res) => {
 
         const [tasks] = await pool.query('SELECT * FROM tasks ORDER BY id DESC');
 
+        const [settingsRaw] = await pool.query('SELECT * FROM settings');
+        const settings = {};
+        settingsRaw.forEach(s => settings[s.setting_key] = s.setting_value);
+
         const clients = parseJsonFields(clientsRaw, ['contacts', 'services', 'docs', 'monitoring']);
-        res.json({ clients, projects, contexts, tasks, dependencies, projectLogs, subtasks });
+        res.json({ clients, projects, contexts, tasks, dependencies, projectLogs, subtasks, settings });
     } catch (e) {
         console.error("DB Error Crítico en Dashboard:", e);
         res.status(500).json({ error: "Error de Base de Datos: " + e.message });
@@ -308,10 +549,54 @@ app.put('/api/clients/:id', async (req, res) => {
 });
 
 // 3. Proyectos
-app.post('/api/projects', async (req, res) => {
-    const { name, client_id, color, status, jira_link, doc_link } = req.body;
+// --- MIGRACIONES ---
+const runMigrations = async () => {
     try {
-        const [result] = await pool.query('INSERT INTO projects (name, client_id, color, status, jira_link, doc_link) VALUES (?, ?, ?, ?, ?, ?)', [name, client_id, color, status, jira_link, doc_link]);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS settings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) UNIQUE NOT NULL,
+                setting_value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        `);
+
+        // Migraciones Projects
+        const [projectsCols] = await pool.query('SHOW COLUMNS FROM projects LIKE "company"');
+        if (projectsCols.length === 0) {
+            console.log('📦 [MIGRATION] Añadiendo columna "company" a projects...');
+            await pool.query('ALTER TABLE projects ADD COLUMN company VARCHAR(100) DEFAULT NULL AFTER client_id');
+        }
+
+        const [projectsJira] = await pool.query('SHOW COLUMNS FROM projects LIKE "jira_link"');
+        if (projectsJira.length === 0) {
+            console.log('📦 [MIGRATION] Añadiendo jira_link y doc_link a projects...');
+            await pool.query('ALTER TABLE projects ADD COLUMN jira_link TEXT DEFAULT NULL, ADD COLUMN doc_link TEXT DEFAULT NULL');
+        }
+
+        // Migraciones Subtasks
+        const [subtasksCols] = await pool.query('SHOW COLUMNS FROM subtasks LIKE "updated_at"');
+        if (subtasksCols.length === 0) {
+            console.log('📦 [MIGRATION] Añadiendo columna "updated_at" a subtasks...');
+            await pool.query('ALTER TABLE subtasks ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+        }
+
+        const [subtasksCompleted] = await pool.query('SHOW COLUMNS FROM subtasks LIKE "completed_at"');
+        if (subtasksCompleted.length === 0) {
+            console.log('📦 [MIGRATION] Añadiendo columna "completed_at" a subtasks...');
+            await pool.query('ALTER TABLE subtasks ADD COLUMN completed_at TIMESTAMP NULL DEFAULT NULL');
+            // Inicializar las ya terminadas con una fecha pasada para evitar que salgan en el reporte de hoy tras la migración
+            await pool.query('UPDATE subtasks SET completed_at = "1970-01-01 00:00:00" WHERE status = "done" AND completed_at IS NULL');
+        }
+
+    } catch (e) { console.error('Error en migración:', e); }
+};
+runMigrations();
+
+app.post('/api/projects', async (req, res) => {
+    const { name, client_id, color, status, jira_link, doc_link, company } = req.body;
+    try {
+        const [result] = await pool.query('INSERT INTO projects (name, client_id, company, color, status, jira_link, doc_link) VALUES (?, ?, ?, ?, ?, ?, ?)', [name, client_id, company || null, color, status, jira_link, doc_link]);
         res.json({ id: result.insertId, ...req.body });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -411,9 +696,15 @@ app.post('/api/subtasks', async (req, res) => {
 
 app.put('/api/subtasks/:id', async (req, res) => {
     const { id } = req.params;
-    const updates = req.body;
+    let updates = req.body;
 
-    // Método original con Object.keys: más compatible y soporta status_comment si la columna existe en BBDD
+    // Si el estado cambia a done, marcamos completed_at
+    if (updates.status === 'done') {
+        updates.completed_at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    } else if (updates.status && updates.status !== 'done') {
+        updates.completed_at = null;
+    }
+
     const fields = Object.keys(updates).map(k => `${k} = ?`).join(', ');
     const values = [...Object.values(updates), id];
 

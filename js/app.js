@@ -32,6 +32,12 @@ const FocusDeckApp = () => {
     const [newTaskScheduledDate, setNewTaskScheduledDate] = useState('');
     const [showDatePicker, setShowDatePicker] = useState(false);
 
+    // Modal states
+    const [showCreateClientModal, setShowCreateClientModal] = useState(false);
+    const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
+    const [showCreateContextModal, setShowCreateContextModal] = useState(false);
+    const [selectedClient, setSelectedClient] = useState(null);
+
     // --- EFECTOS ---
     useEffect(() => {
         api.getDashboard().then(data => {
@@ -136,6 +142,58 @@ const FocusDeckApp = () => {
         await api.deleteDependency(taskId, blockerId);
     };
 
+    // Client handlers
+    const handleCreateClient = async (clientData) => {
+        const result = await api.createClient(clientData);
+        if (result) {
+            setClients(prev => [...prev, result]);
+            setShowCreateClientModal(false);
+            addNotification("Cliente Creado", `"${result.name}" añadido correctamente.`);
+        }
+    };
+
+    const handleUpdateClient = async (id, updates) => {
+        setClients(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
+        await api.updateClient(id, updates);
+    };
+
+    // Project handlers
+    const handleCreateProject = async (projectData) => {
+        const result = await api.createProject(projectData);
+        if (result) {
+            setProjects(prev => [...prev, result]);
+            setShowCreateProjectModal(false);
+            addNotification("Proyecto Creado", `"${result.name}" añadido correctamente.`);
+        }
+    };
+
+    const handleUpdateProject = async (id, updates) => {
+        setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+        await api.updateProject(id, updates);
+    };
+
+    const handleDeleteProject = async (id) => {
+        if (!confirm("¿Borrar proyecto?")) return;
+        setProjects(prev => prev.filter(p => p.id !== id));
+        await api.deleteProject(id);
+    };
+
+    // Context handlers
+    const handleCreateContext = async (contextData) => {
+        const result = await api.createContext(contextData);
+        if (result) {
+            setContexts(prev => [...prev, result]);
+            setShowCreateContextModal(false);
+            addNotification("Contexto Creado", `"${result.name}" añadido correctamente.`);
+        }
+    };
+
+    const handleDeleteContext = async (id) => {
+        if (!confirm("¿Borrar contexto?")) return;
+        setContexts(prev => prev.filter(c => c.id !== id));
+        await api.deleteContext(id);
+    };
+
     // --- MEMOS ---
     const filteredTasks = useMemo(() => {
         let list = tasks;
@@ -211,7 +269,12 @@ const FocusDeckApp = () => {
                             <NavItem icon="Clock" label="En Espera" active={view === 'waiting'} onClick={() => { setView('waiting'); setIsSidebarOpen(false); }} />
                             <NavItem icon="Star" label="Cartera TAM" active={view === 'client_tasks'} onClick={() => { setView('client_tasks'); setIsSidebarOpen(false); }} />
 
-                            <div className="pt-4 pb-2 px-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Proyectos</div>
+                            <div className="pt-4 pb-2 px-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Gestión</div>
+                            <NavItem icon="Building" label="Clientes" active={view === 'clients'} onClick={() => { setView('clients'); setIsSidebarOpen(false); }} count={clients.length} />
+                            <NavItem icon="FolderOpen" label="Proyectos" active={view === 'projects'} onClick={() => { setView('projects'); setIsSidebarOpen(false); }} count={projects.filter(p => p.status !== 'closed').length} />
+                            <NavItem icon="Tag" label="Contextos" active={view === 'contexts'} onClick={() => { setView('contexts'); setIsSidebarOpen(false); }} count={contexts.length} />
+
+                            <div className="pt-4 pb-2 px-2 text-[10px] font-bold text-gray-400 uppercase tracking-widest">Proyectos Activos</div>
                             {projects.filter(p => p.status !== 'closed').map(p => (
                                 <NavItem key={p.id} label={p.name} active={view === 'project' && filterId === p.id} onClick={() => { setView('project'); setFilterId(p.id); setIsSidebarOpen(false); }} dot={p.color} />
                             ))}
@@ -251,40 +314,172 @@ const FocusDeckApp = () => {
 
                     <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
                         <div className="max-w-4xl mx-auto">
-                            {/* Input de Tarea */}
-                            <div className="mb-8 relative group">
-                                <div className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500"><Icons.Plus size={20} /></div>
-                                <input
-                                    type="text"
-                                    className="w-full pl-12 pr-24 py-4 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none text-lg transition-all"
-                                    placeholder="Escribe algo para hacer hoy..."
-                                    value={newTaskInput}
-                                    onChange={e => setNewTaskInput(e.target.value)}
-                                    onKeyDown={handleAddTask}
-                                />
-                                {newTaskInput && (
-                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                                        <UI.Button size="sm" onClick={() => handleAddTask()}>Añadir</UI.Button>
+                            {/* Clients View */}
+                            {view === 'clients' && (
+                                <>
+                                    <div className="flex justify-between items-center mb-6">
+                                        <h3 className="text-2xl font-bold dark:text-white">Clientes</h3>
+                                        <UI.Button onClick={() => setShowCreateClientModal(true)}>
+                                            <Icons.Plus size={16} className="mr-2" /> Nuevo Cliente
+                                        </UI.Button>
                                     </div>
-                                )}
-                            </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {clients.map(client => {
+                                            const clientTaskCount = tasks.filter(t =>
+                                                (t.client_id === client.id || projects.find(p => p.id === t.project_id && p.client_id === client.id))
+                                                && t.status !== 'done'
+                                            ).length;
+                                            return (
+                                                <ClientComponents.ClientCard
+                                                    key={client.id}
+                                                    client={client}
+                                                    taskCount={clientTaskCount}
+                                                    onClick={setSelectedClient}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+                                    {clients.length === 0 && (
+                                        <div className="text-center py-12 text-gray-400">
+                                            <Icons.Building size={48} className="mx-auto mb-4 opacity-50" />
+                                            <p>No hay clientes. Crea uno para empezar.</p>
+                                        </div>
+                                    )}
+                                </>
+                            )}
 
-                            {/* Lista de Tareas */}
-                            <div className="space-y-1">
-                                {filteredTasks.map(task => (
-                                    <TaskComponents.TaskItem
-                                        key={task.id}
-                                        task={task}
-                                        onToggle={toggleTask}
-                                        onEdit={setEditingTask}
-                                        onSetFocus={setFocusTask}
-                                        onDelete={deleteTask}
-                                        projectName={projects.find(p => p.id === task.project_id)?.name}
-                                        clientName={clients.find(c => c.id === task.client_id)?.name}
-                                        onAddToDay={(id) => updateTask(id, { is_today: true })}
-                                    />
-                                ))}
-                            </div>
+                            {/* Projects View */}
+                            {view === 'projects' && (
+                                <>
+                                    <div className="flex justify-between items-center mb-6">
+                                        <h3 className="text-2xl font-bold dark:text-white">Proyectos</h3>
+                                        <UI.Button onClick={() => setShowCreateProjectModal(true)}>
+                                            <Icons.Plus size={16} className="mr-2" /> Nuevo Proyecto
+                                        </UI.Button>
+                                    </div>
+                                    <div className="space-y-3">
+                                        {projects.filter(p => p.status !== 'closed' && p.status !== 'cancelled').map(project => {
+                                            const client = clients.find(c => c.id === project.client_id);
+                                            const projectTasks = tasks.filter(t => t.project_id === project.id && t.status !== 'done');
+                                            return (
+                                                <div
+                                                    key={project.id}
+                                                    className="bg-white dark:bg-slate-800 rounded-xl p-4 border dark:border-gray-700 hover:shadow-lg transition-all cursor-pointer"
+                                                    onClick={() => { setView('project'); setFilterId(project.id); }}
+                                                >
+                                                    <div className="flex items-start justify-between">
+                                                        <div className="flex items-center gap-3 flex-1">
+                                                            <div className="w-3 h-3 rounded-full" style={{ backgroundColor: project.color }}></div>
+                                                            <div>
+                                                                <h4 className="font-bold dark:text-white">{project.name}</h4>
+                                                                {client && <p className="text-sm text-gray-500">{client.name}</p>}
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-xs px-2 py-1 rounded-full bg-gray-100 dark:bg-gray-700">
+                                                                {projectTasks.length} tareas
+                                                            </span>
+                                                            <ProjectComponents.StatusSelect
+                                                                status={project.status}
+                                                                onChange={(newStatus) => handleUpdateProject(project.id, { status: newStatus })}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    {projects.filter(p => p.status !== 'closed').length === 0 && (
+                                        <div className="text-center py-12 text-gray-400">
+                                            <Icons.FolderOpen size={48} className="mx-auto mb-4 opacity-50" />
+                                            <p>No hay proyectos activos. Crea uno para empezar.</p>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            {/* Contexts View */}
+                            {view === 'contexts' && (
+                                <>
+                                    <div className="flex justify-between items-center mb-6">
+                                        <h3 className="text-2xl font-bold dark:text-white">Contextos</h3>
+                                        <UI.Button onClick={() => setShowCreateContextModal(true)}>
+                                            <Icons.Plus size={16} className="mr-2" /> Nuevo Contexto
+                                        </UI.Button>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        {contexts.map(context => {
+                                            const contextTasks = tasks.filter(t => t.context_id === context.id && t.status !== 'done');
+                                            return (
+                                                <div
+                                                    key={context.id}
+                                                    className="bg-white dark:bg-slate-800 rounded-xl p-4 border dark:border-gray-700 hover:shadow-lg transition-all group"
+                                                >
+                                                    <div className="flex items-center justify-between mb-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <Icons.Tag size={18} className="text-blue-500" />
+                                                            <h4 className="font-bold dark:text-white">{context.name}</h4>
+                                                        </div>
+                                                        <button
+                                                            onClick={() => handleDeleteContext(context.id)}
+                                                            className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-opacity"
+                                                        >
+                                                            <Icons.Trash2 size={16} />
+                                                        </button>
+                                                    </div>
+                                                    <p className="text-sm text-gray-500">{contextTasks.length} tareas activas</p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    {contexts.length === 0 && (
+                                        <div className="text-center py-12 text-gray-400">
+                                            <Icons.Tag size={48} className="mx-auto mb-4 opacity-50" />
+                                            <p>No hay contextos. Crea uno para empezar.</p>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            {/* Task Views (existing) */}
+                            {!['clients', 'projects', 'contexts'].includes(view) && (
+                                <>
+                                    {/* Input de Tarea */}
+                                    <div className="mb-8 relative group">
+                                        <div className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500"><Icons.Plus size={20} /></div>
+                                        <input
+                                            type="text"
+                                            className="w-full pl-12 pr-24 py-4 bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none text-lg transition-all"
+                                            placeholder="Escribe algo para hacer hoy..."
+                                            value={newTaskInput}
+                                            onChange={e => setNewTaskInput(e.target.value)}
+                                            onKeyDown={handleAddTask}
+                                        />
+                                        {newTaskInput && (
+                                            <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                                                <UI.Button size="sm" onClick={() => handleAddTask()}>Añadir</UI.Button>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Lista de Tareas */}
+                                    <div className="space-y-1">
+                                        {filteredTasks.map(task => (
+                                            <TaskComponents.TaskItem
+                                                key={task.id}
+                                                task={task}
+                                                onToggle={toggleTask}
+                                                onEdit={setEditingTask}
+                                                onSetFocus={setFocusTask}
+                                                onDelete={deleteTask}
+                                                projectName={projects.find(p => p.id === task.project_id)?.name}
+                                                clientName={clients.find(c => c.id === task.client_id)?.name}
+                                                onAddToDay={(id) => updateTask(id, { is_today: true })}
+                                            />
+                                        ))}
+                                    </div>
+                                </>
+                            )}
                         </div>
                     </div>
                 </main>
@@ -306,23 +501,59 @@ const FocusDeckApp = () => {
                     />
                 )}
 
+                {/* Client, Project, Context Modals */}
+                {showCreateClientModal && (
+                    <ClientComponents.CreateClientModal
+                        onClose={() => setShowCreateClientModal(false)}
+                        onSave={handleCreateClient}
+                    />
+                )}
+
+                {showCreateProjectModal && (
+                    <ProjectComponents.CreateProjectModal
+                        clients={clients}
+                        onClose={() => setShowCreateProjectModal(false)}
+                        onSave={handleCreateProject}
+                    />
+                )}
+
+                {showCreateContextModal && (
+                    <OtherComponents.CreateContextModal
+                        onClose={() => setShowCreateContextModal(false)}
+                        onSave={handleCreateContext}
+                    />
+                )}
+
+                {selectedClient && (
+                    <ClientComponents.ClientDetailModal
+                        client={selectedClient}
+                        onClose={() => setSelectedClient(null)}
+                        onUpdateClient={handleUpdateClient}
+                        onNavigateProject={(id) => { setView('project'); setFilterId(id); setSelectedClient(null); }}
+                        onEditTask={setEditingTask}
+                    />
+                )}
+
                 <UI.NotificationToast notifications={notifications} onClose={(id) => setNotifications(prev => prev.filter(n => n.id !== id))} />
             </div>
         </AppContext.Provider>
     );
 };
 
-const NavItem = ({ icon, label, active, onClick, count, dot }) => (
-    <button
-        onClick={onClick}
-        className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white'}`}
-    >
-        <div className="flex items-center gap-3">
-            {icon ? <Icons[icon] size={18} /> : <div className="w-2.5 h-2.5 rounded-full ml-1" style={{ backgroundColor: dot }} />}
-            <span className="truncate">{label}</span>
-        </div>
-        {count > 0 && <span className="text-[10px] bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-full font-bold">{count}</span>}
-    </button>
-);
+const NavItem = ({ icon, label, active, onClick, count, dot }) => {
+    const IconComponent = icon ? Icons[icon] : null;
+    return (
+        <button
+            onClick={onClick}
+            className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${active ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-white'}`}
+        >
+            <div className="flex items-center gap-3">
+                {IconComponent ? <IconComponent size={18} /> : <div className="w-2.5 h-2.5 rounded-full ml-1" style={{ backgroundColor: dot }} />}
+                <span className="truncate">{label}</span>
+            </div>
+            {count > 0 && <span className="text-[10px] bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-full font-bold">{count}</span>}
+        </button>
+    );
+};
 
 ReactDOM.render(<FocusDeckApp />, document.getElementById('root'));
